@@ -8,5 +8,5 @@ __pycache__/
 venv/
 
 #output
-output/output/
+output
 output/output.zip
