@@ -33,7 +33,8 @@ input/EC_*.json
                   +---------+----------+
                             |  pass -> write file / fail -> reject case
                             v
-                     output/EC_*.json
+                  output/output/EC_*.json
+                  + output/output.zip
 ```
 
 Both domain agents (Fulfillment, Payment) run independently against the same
@@ -50,18 +51,15 @@ allowed to block a case from being written.
 | Payment | `src/agents/payment_agent.py` | `order_payments.csv`, `order_items.csv` (via `DataStore`) | `PaymentResult` → Coordinator |
 | Coordinator / Policy | `src/agents/coordinator.py` | `FulfillmentResult` + `PaymentResult` only (no direct CSV access) | `CaseOutput` → Verifier |
 | Verifier | `src/agents/verifier.py` | `CaseOutput` + `DataStore` (to confirm evidence IDs are real) | pass/fail list of problems → `main.py` |
-| I/O harness | `main.py` | `input/EC_*.json` | `output/EC_*.json`, `logging/trace.jsonl` |
+| I/O harness | `main.py` | `input/EC_*.json` | `output/output/EC_*.json`, submission zip, metadata and trace |
 
-Every field except `confidence` is derived deterministically from
-`EC_POLICY_V1`'s fixed rule table (README §4), which requires exact
-reproducibility across 50 graded cases rather than generative judgment. The
-Coordinator makes the one LLM call in the pipeline: `gpt-4o-mini`
-(`src/shared/llm_client.py`) scores `confidence` in `[0, 1]` given the facts
-that already determined `primary_issue` — it never influences
-`primary_issue` itself, only how strongly the supporting facts are judged to
-back it. If the API call fails or returns something unparseable/out of
-range, the Coordinator falls back to a fixed default (0.95 if a refund is
-recommended, 0.9 otherwise) so a flaky call can't break a graded run.
+Every field is derived deterministically from `EC_POLICY_V1`'s fixed rule
+table (README §4), which requires exact reproducibility across 50 graded
+cases rather than generative judgment. A case receives confidence `1.0`
+only after its CSV facts satisfy one complete policy rule; the Verifier still
+checks that confidence is in `[0, 1]` before the case can be written. This
+removes API variability from the graded artifact and keeps repeated runs
+identical.
 
 ## Order & Seller Agent + Delivery Agent
 
@@ -129,14 +127,10 @@ that decides `primary_issue` and builds the final `CaseOutput`.
   `resolution_actions` (mapped 1-1 from `primary_issue`).
 - **Handoff:** returns `CaseOutput` to the Verifier Agent before anything is
   written to `output/`.
-- **Known gap:** the `unsupported_late_claim` fallback branch does not
-  explicitly re-check `PaymentResult.reconciled` before returning that
-  issue — README §4 requires "payment khớp" for this outcome. Verified this
-  doesn't affect any of the 50 real cases (every case that falls through to
-  `unsupported_late_claim` already has `reconciled = True`), but a case with
-  an unreconciled payment and on-time delivery would be misclassified. Left
-  as-is given the official 50 cases don't contain that combination
-  (README §4: "Bộ 50 case chính thức không chứa tình huống mơ hồ").
+- **No-rule handling:** `unsupported_late_claim` is selected only when actual
+  delivery and estimated timestamps both exist, delivery is not late, and
+  payment reconciles. Missing or contradictory facts raise an integration
+  error instead of being silently mislabeled as a supported policy outcome.
 
 ## Verifier Agent
 
@@ -144,15 +138,15 @@ Deterministic — does not call an LLM. Last checkpoint before a case is
 written to disk; a case that fails here is rejected rather than written
 with bad data.
 
-- **Role:** `verify_case()` checks `CaseOutput` against every hard-gate
-  condition in README §6/§8: valid `primary_issue`/`case_status` enum
-  values, `confidence` in `[0, 1]`, every entity/evidence/cause/action list
-  within its cap, every `resolution_action` in the known set, and — via
+- **Role:** `verify_case()` checks exact schema and value types, policy/cause/
+  action/refund consistency, confidence, rounding, list caps, responsible
+  parties, no-item behavior, entity-to-order relationships and — via
   `validate_evidence_ids()` — that every evidence ID actually resolves
-  against the CSV data (catches false positives).
+  against the CSV data and belongs to an affected entity.
 - **Inputs:** one `CaseOutput` plus the shared `DataStore` (read-only, to
   confirm evidence IDs).
 - **Outputs:** a list of problem strings; empty means the case passes.
-  `main.py` skips writing `output/EC_*.json` for any case with a non-empty
-  list and logs it to `logging/trace.jsonl` instead.
+  `main.py` refuses to replace the submission if any case has a non-empty
+  list, logs the run, and only after all 50 pass writes JSON plus a zip with
+  exactly `output/EC_001.json` through `output/EC_050.json`.
 - **Result:** all 50 real cases pass with zero problems.

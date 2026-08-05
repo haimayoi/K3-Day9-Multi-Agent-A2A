@@ -36,17 +36,17 @@
 
 | Nhiệm vụ đã thực hiện     | File/hàm/artifact liên quan                   | Kết quả bàn giao                                                                                | Cách xác minh                                       |
 | ------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| Điều phối domain agents      | `coordinate_case()`                           | Mỗi case nhận đúng một`FulfillmentResult` và một `PaymentResult` trước khi áp policy | Trace có 50 bước Fulfillment và 50 bước Payment |
+| Điều phối domain agents      | `coordinate_case()`                           | Mỗi case nhận đúng một`FulfillmentResult` và một `PaymentResult` trước khi áp policy | 50 trace record chứa đủ các bước handoff          |
 | Áp bảng ưu tiên policy      | `_choose_primary_issue()`                     | Đủ 6 primary issue, đúng thứ tự README §4                                                   | Audit phân bố issue trên 50 output                 |
 | Tạo root cause/action/refund   | `_ranked_causes()`, `_recommended_refund()` | Một root cause/policy chính; refund payment hoặc freight theo issue                             | Kiểm tra JSON output và`verify_case()`            |
 | Chặn output vi phạm hard gate | `verify_case()`                               | Kiểm tra enum, cap, evidence tồn tại, policy/action mapping, tiền và no-item rule             | `50 written, 0 failed verification`                 |
-| Ghi output và trace mới nhất | `main.py`                                     | 50 JSON`EC_001` đến `EC_050`; 200 dòng trace, không append lượt cũ                      | `python main.py` và audit artifact                 |
+| Ghi output và trace mới nhất | `main.py`                                     | 50 JSON`EC_001` đến `EC_050`; 50 dòng trace, không append lượt cũ                       | `python main.py` và audit artifact                 |
 
 Artifact cụ thể của lượt chạy gần nhất:
 
 - `output/output/` có đúng 50 file từ `EC_001.json` đến `EC_050.json`.
-- `logging/trace.jsonl` có 200 dòng: 50 handoff cho mỗi bước Fulfillment, Payment, Coordinator và Verifier.
-- Candidate hiện tại có 183 evidence ID và vượt toàn bộ kiểm tra nội bộ. Candidate này chưa được ground-truth evaluator xác nhận tại thời điểm viết báo cáo.
+- `logging/trace.jsonl` có 50 dòng, mỗi dòng chứa đủ bốn bước Fulfillment, Payment, Coordinator và Verifier của một case.
+- Candidate hiện tại giữ 208 evidence ID của lần chấm tốt nhất và thử confidence deterministic `1.0`. Candidate confidence này chưa được ground-truth evaluator xác nhận tại thời điểm viết báo cáo.
 - Mức điểm ground-truth cao nhất đã xác nhận là `95.4759`; tại mức này Evidence đạt `93.7829` và Root cause đạt `95.9874`.
 
 ## 4. Giải thích phần kỹ thuật đã thực hiện
@@ -63,7 +63,7 @@ Person C là điểm tích hợp của hệ thống. Tôi phải nhận kết qu
 4. Refund của canceled/unavailable bằng tổng payment; refund của hai issue giao trễ bằng tổng freight; hai issue no-action có refund `0.0`.
 5. Evidence được dựng bằng helper trong `src/shared/evidence.py`, chỉ dùng ID có thể truy ngược về CSV. Policy evidence luôn tương ứng root cause hạng 1 và được giữ khi áp giới hạn 10 ID.
 6. `verify_case()` chạy cuối. Case có lỗi không được ghi ra output; lỗi vẫn được lưu trong trace để debug.
-7. Confidence không quyết định classification. Policy engine quyết định issue một cách deterministic; lời gọi `gpt-4o-mini` chỉ chấm confidence và có fallback cố định nếu API lỗi.
+7. Confidence không quyết định classification. Vì verdict chỉ được tạo khi các điều kiện CSV deterministic đã thỏa và còn phải qua Verifier, output dùng confidence `1.0` một cách tái lập, không phụ thuộc API.
 
 ### Input, output và contract
 
@@ -86,7 +86,7 @@ python main.py
 
 - **Kết quả mong đợi:** đọc đủ 50 input, ghi đủ 50 output, không case nào fail Verifier và trace phản ánh đủ bốn bước.
 - **Kết quả thực tế:** `Found 50 input cases` và `Done: 50 written, 0 failed verification.`
-- **Artifact/log:** `output/output/EC_001.json` đến `EC_050.json`; `logging/trace.jsonl` có 200 dòng.
+- **Artifact/log:** `output/output/EC_001.json` đến `EC_050.json`; `logging/trace.jsonl` có 50 dòng.
 
 ## 5. Một quyết định kỹ thuật quan trọng
 

@@ -46,6 +46,7 @@ def analyze_payment(order_id: str) -> PaymentResult:
     payment_total_brl = round_brl(
         sum_brl(payments["payment_value"]) if not payments.empty else 0.0
     )
+    expected_total_brl = sum_brl([item_total_brl, freight_total_brl])
 
     # affected_entities.payment_ids format (README.md #6) is bare "<order_id>:<seq>",
     # no "payment:" prefix — that prefix is only for evidence_ids, built later by
@@ -65,7 +66,7 @@ def analyze_payment(order_id: str) -> PaymentResult:
         is_split_payment=payment_row_count >= 2,
         reconciled=within_tolerance(
             payment_total_brl,
-            item_total_brl + freight_total_brl,
+            expected_total_brl,
             MONEY_RECONCILIATION_TOLERANCE_BRL,
         ),
     )

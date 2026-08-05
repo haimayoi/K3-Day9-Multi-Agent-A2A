@@ -28,48 +28,7 @@ from src.shared.config import (
 )
 from src.shared.evidence import item_evidence, order_evidence, payment_evidence, policy_evidence, seller_evidence
 from src.shared.interfaces import CaseOutput, FulfillmentResult, PaymentResult
-from src.shared.llm_client import call_llm
 from src.shared.money import round_brl
-
-
-_CONFIDENCE_SYSTEM_PROMPT = (
-    "You are a policy compliance reviewer for an e-commerce dispute resolution "
-    "system. You are given the primary_issue a deterministic rules engine already "
-    "decided, plus the facts that led to it. Respond with ONLY a single number "
-    "between 0 and 1 (e.g. 0.93) representing how strongly the given facts support "
-    "that classification. No words, no explanation, just the number."
-)
-
-
-def _llm_confidence(
-    primary_issue: str,
-    fallback: float,
-    fulfillment: FulfillmentResult,
-    payment: PaymentResult,
-) -> float:
-    """Confidence score via gpt-4o-mini, with a deterministic fallback.
-
-    The rules engine already decided primary_issue with certainty — this call
-    never changes that decision, it only scores how clean the supporting facts
-    are. Any failure (no API key, network, unparseable/out-of-range response)
-    falls back to `fallback` so a flaky API call never breaks a graded run.
-    """
-    user_prompt = (
-        f"primary_issue: {primary_issue}\n"
-        f"order_status: {fulfillment['order_status']}\n"
-        f"delivered_late: {fulfillment['delivered_late']}\n"
-        f"seller_late: {fulfillment['seller_late']}\n"
-        f"is_split_payment: {payment['is_split_payment']}\n"
-        f"payment_reconciled: {payment['reconciled']}\n"
-    )
-    try:
-        raw = call_llm(_CONFIDENCE_SYSTEM_PROMPT, user_prompt, temperature=0.0)
-        value = float(raw.strip())
-        if 0.0 <= value <= 1.0:
-            return round(value, 2)
-    except Exception:
-        pass
-    return fallback
 
 
 _ISSUE_TO_CAUSE = {
@@ -135,11 +94,23 @@ def _choose_primary_issue(fulfillment: FulfillmentResult, payment: PaymentResult
         return 'unavailable_order_paid'
     if fulfillment['delivered_late'] and fulfillment['seller_late']:
         return 'late_delivery_seller'
-    if fulfillment['delivered_late'] and not fulfillment['seller_late']:
+    if (
+        fulfillment['delivered_late']
+        and not fulfillment['seller_late']
+        and fulfillment['actual_carrier_date'] is not None
+        and bool(fulfillment['item_ids'])
+    ):
         return 'late_delivery_logistics'
     if payment['is_split_payment'] and payment['reconciled']:
         return 'valid_split_payment'
-    return 'unsupported_late_claim'
+    if (
+        fulfillment['actual_customer_date'] is not None
+        and fulfillment['estimated_date'] is not None
+        and not fulfillment['delivered_late']
+        and payment['reconciled']
+    ):
+        return 'unsupported_late_claim'
+    raise ValueError('Case facts do not satisfy any EC_POLICY_V1 rule')
 
 
 def _responsible_parties(primary_issue: str, fulfillment: FulfillmentResult) -> list[dict[str, str]]:
@@ -235,15 +206,12 @@ def _build_case_output(
     evidence_ids = _build_evidence_ids(
         order_ids, item_ids, seller_ids, payment_ids, fulfillment, primary_issue
     )
-    fallback_confidence = 0.95 if refund_brl > 0 else 0.9
-    confidence = _llm_confidence(primary_issue, fallback_confidence, fulfillment, payment)
-
     return {
         'case_id': case['case_id'],
         'assessment': {
             'primary_issue': primary_issue,
             'case_status': 'action_required' if refund_brl > 0 else 'no_action',
-            'confidence': confidence,
+            'confidence': 1.0,
         },
         'affected_entities': {
             'order_ids': order_ids,
