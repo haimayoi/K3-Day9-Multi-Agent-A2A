@@ -16,10 +16,21 @@ from src.shared.config import (
     MAX_ROOT_CAUSES,
     PRIMARY_ISSUES,
     RESOLUTION_ACTIONS,
+    ROOT_CAUSE_CODES,
 )
 from src.shared.data_loader import DataStore
 from src.shared.evidence import validate_evidence_ids
 from src.shared.interfaces import CaseOutput
+
+
+_ISSUE_POLICY = {
+    "canceled_order_paid": ("ORDER_CANCELED_AFTER_PAYMENT", "issue_full_refund"),
+    "unavailable_order_paid": ("ORDER_UNAVAILABLE_AFTER_PAYMENT", "issue_full_refund"),
+    "late_delivery_seller": ("SELLER_HANDOFF_AFTER_LIMIT", "refund_freight"),
+    "late_delivery_logistics": ("CARRIER_DELIVERED_AFTER_ESTIMATE", "refund_freight"),
+    "valid_split_payment": ("MULTIPLE_PAYMENTS_RECONCILED", "explain_valid_split_payment"),
+    "unsupported_late_claim": ("DELIVERY_WITHIN_ESTIMATE", "reject_late_refund"),
+}
 
 
 def verify_case(output: CaseOutput, store: DataStore) -> list[str]:
@@ -47,6 +58,13 @@ def verify_case(output: CaseOutput, store: DataStore) -> list[str]:
     if len(output["root_cause_analysis"]["ranked_causes"]) > MAX_ROOT_CAUSES:
         problems.append(f"ranked_causes exceeds cap of {MAX_ROOT_CAUSES}")
 
+    ranked_causes = output["root_cause_analysis"]["ranked_causes"]
+    for expected_rank, cause in enumerate(ranked_causes, start=1):
+        if cause["cause_code"] not in ROOT_CAUSE_CODES:
+            problems.append(f"unknown root cause: {cause['cause_code']!r}")
+        if cause["rank"] != expected_rank:
+            problems.append(f"root cause rank must be {expected_rank}: {cause!r}")
+
     if len(output["root_cause_analysis"]["responsible_parties"]) > MAX_RESPONSIBLE_PARTIES:
         problems.append(f"responsible_parties exceeds cap of {MAX_RESPONSIBLE_PARTIES}")
 
@@ -56,6 +74,31 @@ def verify_case(output: CaseOutput, store: DataStore) -> list[str]:
     for action in output["resolution_actions"]:
         if action not in RESOLUTION_ACTIONS:
             problems.append(f"unknown resolution_action: {action!r}")
+
+    primary_issue = output["assessment"]["primary_issue"]
+    if primary_issue in _ISSUE_POLICY:
+        expected_cause, expected_action = _ISSUE_POLICY[primary_issue]
+        actual_causes = [cause["cause_code"] for cause in ranked_causes]
+        if actual_causes != [expected_cause]:
+            problems.append(
+                f"root causes for {primary_issue!r} must be [{expected_cause!r}]: {actual_causes}"
+            )
+        if output["resolution_actions"] != [expected_action]:
+            problems.append(
+                f"resolution actions for {primary_issue!r} must be [{expected_action!r}]"
+            )
+
+        policy_evidence_ids = [
+            evidence_id for evidence_id in output["evidence_ids"] if evidence_id.startswith("policy:")
+        ]
+        expected_policy_evidence = f"policy:{expected_cause}"
+        if policy_evidence_ids != [expected_policy_evidence]:
+            problems.append(
+                f"policy evidence for {primary_issue!r} must be [{expected_policy_evidence!r}]"
+            )
+
+    if len(output["evidence_ids"]) != len(set(output["evidence_ids"])):
+        problems.append("evidence_ids contains duplicates")
 
     invalid_evidence = validate_evidence_ids(output["evidence_ids"], store)
     if invalid_evidence:

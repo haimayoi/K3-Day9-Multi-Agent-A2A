@@ -24,7 +24,6 @@ from src.shared.config import (
     MAX_EVIDENCE_IDS,
     MAX_IDS_PER_ENTITY_SET,
     MAX_RESPONSIBLE_PARTIES,
-    MAX_ROOT_CAUSES,
     PLATFORM_PARTY_ID,
 )
 from src.shared.evidence import item_evidence, order_evidence, payment_evidence, policy_evidence, seller_evidence
@@ -106,6 +105,14 @@ def _unique(values: list[str]) -> list[str]:
     return result
 
 
+def _entity_id_sort_key(value: str) -> tuple[str, int, int]:
+    """Sort compound entity IDs by their numeric sequence when possible."""
+    prefix, separator, suffix = value.rpartition(':')
+    if separator and suffix.isdigit():
+        return prefix, 0, int(suffix)
+    return value, 1, 0
+
+
 def _strip_evidence_prefix(value: str, prefix: str) -> str:
     marker = f'{prefix}:'
     return value[len(marker):] if value.startswith(marker) else value
@@ -146,15 +153,9 @@ def _responsible_parties(primary_issue: str, fulfillment: FulfillmentResult) -> 
     return []
 
 
-def _ranked_causes(primary_issue: str, fulfillment: FulfillmentResult, payment: PaymentResult):
-    cause_codes = [_ISSUE_TO_CAUSE[primary_issue]]
-    cause_codes.extend(fulfillment['candidate_root_causes'])
-    if payment['is_split_payment'] and payment['reconciled']:
-        cause_codes.append('MULTIPLE_PAYMENTS_RECONCILED')
-    return [
-        {'cause_code': cause_code, 'rank': rank}
-        for rank, cause_code in enumerate(_cap(_unique(cause_codes), MAX_ROOT_CAUSES), start=1)
-    ]
+def _ranked_causes(primary_issue: str) -> list[dict[str, str | int]]:
+    """README #4 maps each final issue to one corresponding root cause."""
+    return [{'cause_code': _ISSUE_TO_CAUSE[primary_issue], 'rank': 1}]
 
 
 def _build_evidence_ids(
@@ -162,36 +163,40 @@ def _build_evidence_ids(
     item_ids: list[str],
     seller_ids: list[str],
     payment_ids: list[str],
-    ranked_causes,
     fulfillment: FulfillmentResult,
     primary_issue: str,
 ) -> list[str]:
+    """Build the smallest evidence set that directly supports the decision.
+
+    Item rows establish item/freight totals and shipping limits. Payment rows
+    establish paid/reconciled totals. A seller row is decision evidence only
+    when the seller is the responsible party. The order and policy records
+    establish status/delivery dates and the rule applied, respectively.
+    """
     evidence_ids: list[str] = []
     if fulfillment['order_exists']:
         evidence_ids.extend(order_evidence(entity_order_id) for entity_order_id in order_ids)
 
-    evidence_ids.append(policy_evidence(str(ranked_causes[0]['cause_code'])))
+    include_items = primary_issue not in ('canceled_order_paid', 'unavailable_order_paid')
+    if include_items:
+        for item_id in item_ids:
+            evidence_id = _item_evidence_from_entity(item_id)
+            if evidence_id is not None:
+                evidence_ids.append(evidence_id)
 
     for payment_id in payment_ids:
         evidence_id = _payment_evidence_from_entity(payment_id)
         if evidence_id is not None:
             evidence_ids.append(evidence_id)
 
-    evidence_seller_ids = seller_ids
     if primary_issue == 'late_delivery_seller':
         evidence_seller_ids = _unique(fulfillment['late_seller_ids'] or seller_ids)
-    for seller_id in _cap(evidence_seller_ids, MAX_IDS_PER_ENTITY_SET):
-        evidence_ids.append(seller_evidence(seller_id))
+        for seller_id in _cap(evidence_seller_ids, MAX_IDS_PER_ENTITY_SET):
+            evidence_ids.append(seller_evidence(seller_id))
 
-    for item_id in item_ids:
-        evidence_id = _item_evidence_from_entity(item_id)
-        if evidence_id is not None:
-            evidence_ids.append(evidence_id)
-
-    for ranked_cause in ranked_causes[1:]:
-        evidence_ids.append(policy_evidence(str(ranked_cause['cause_code'])))
-
-    return _cap(_unique(evidence_ids), MAX_EVIDENCE_IDS)
+    policy_id = policy_evidence(_ISSUE_TO_CAUSE[primary_issue])
+    data_evidence = _cap(_unique(evidence_ids), MAX_EVIDENCE_IDS - 1)
+    return [*data_evidence, policy_id]
 
 
 def _recommended_refund(primary_issue: str, payment: PaymentResult) -> float:
@@ -204,10 +209,13 @@ def _recommended_refund(primary_issue: str, payment: PaymentResult) -> float:
 
 def _affected_entity_sets(order_id: str, fulfillment: FulfillmentResult, payment: PaymentResult):
     order_ids = _cap(_unique(fulfillment['order_ids'] or [order_id]), MAX_IDS_PER_ENTITY_SET)
-    item_ids = _cap(_unique(fulfillment['item_ids']), MAX_IDS_PER_ENTITY_SET)
-    seller_ids = _cap(_unique(fulfillment['seller_ids']), MAX_IDS_PER_ENTITY_SET)
+    item_ids = _cap(sorted(_unique(fulfillment['item_ids']), key=_entity_id_sort_key), MAX_IDS_PER_ENTITY_SET)
+    seller_ids = _cap(sorted(_unique(fulfillment['seller_ids'])), MAX_IDS_PER_ENTITY_SET)
     payment_ids = _cap(
-        _unique([_strip_evidence_prefix(payment_id, 'payment') for payment_id in payment['payment_ids']]),
+        sorted(
+            _unique([_strip_evidence_prefix(payment_id, 'payment') for payment_id in payment['payment_ids']]),
+            key=_entity_id_sort_key,
+        ),
         MAX_IDS_PER_ENTITY_SET,
     )
     return order_ids, item_ids, seller_ids, payment_ids
@@ -222,10 +230,10 @@ def _build_case_output(
     primary_issue = _choose_primary_issue(fulfillment, payment)
     refund_brl = _recommended_refund(primary_issue, payment)
     order_ids, item_ids, seller_ids, payment_ids = _affected_entity_sets(order_id, fulfillment, payment)
-    ranked_causes = _ranked_causes(primary_issue, fulfillment, payment)
+    ranked_causes = _ranked_causes(primary_issue)
     responsible_parties = _cap(_responsible_parties(primary_issue, fulfillment), MAX_RESPONSIBLE_PARTIES)
     evidence_ids = _build_evidence_ids(
-        order_ids, item_ids, seller_ids, payment_ids, ranked_causes, fulfillment, primary_issue
+        order_ids, item_ids, seller_ids, payment_ids, fulfillment, primary_issue
     )
     fallback_confidence = 0.95 if refund_brl > 0 else 0.9
     confidence = _llm_confidence(primary_issue, fallback_confidence, fulfillment, payment)
