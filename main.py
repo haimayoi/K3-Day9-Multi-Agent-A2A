@@ -9,9 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from src.agents.coordinator import resolve_case
-from src.agents.fulfillment_agent import analyze_fulfillment
-from src.agents.payment_agent import analyze_payment
+from src.agents.coordinator import coordinate_case
 from src.agents.verifier import verify_case
 from src.shared.data_loader import get_data_store
 
@@ -23,19 +21,17 @@ TRACE_PATH = ROOT / "logging" / "trace.jsonl"
 
 def run_case(case_path: Path, store, trace_lines: list[str]) -> dict | None:
     case = json.loads(case_path.read_text(encoding="utf-8"))
-    order_id = case["customer_request"]["claimed_order_id"]
 
-    fulfillment = analyze_fulfillment(order_id)
+    output, fulfillment, payment = coordinate_case(case)
+
     trace_lines.append(json.dumps({
         "case_id": case["case_id"], "step": "fulfillment_agent", "output": fulfillment,
     }))
 
-    payment = analyze_payment(order_id)
     trace_lines.append(json.dumps({
         "case_id": case["case_id"], "step": "payment_agent", "output": payment,
     }))
 
-    output = resolve_case(case, fulfillment, payment)
     trace_lines.append(json.dumps({
         "case_id": case["case_id"], "step": "coordinator", "output": output,
     }))
