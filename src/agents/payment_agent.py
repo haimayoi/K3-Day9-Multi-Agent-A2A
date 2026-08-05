@@ -18,7 +18,6 @@ that's the Coordinator/Verifier's job, this agent reports everything it found.
 from __future__ import annotations
 
 from src.shared.data_loader import get_data_store
-from src.shared.evidence import payment_evidence
 from src.shared.interfaces import PaymentResult
 from src.shared.money import round_brl, sum_brl, within_tolerance
 from src.shared.config import MONEY_RECONCILIATION_TOLERANCE_BRL
@@ -40,4 +39,33 @@ def analyze_payment(order_id: str) -> PaymentResult:
     # - is_split_payment: len(payments) >= 2
     # Round every total with round_brl() before returning, per README.md #4 ("làm tròn 2 chữ số").
 
-    raise NotImplementedError("Person B: implement analyze_payment()")
+    item_total_brl = round_brl(sum_brl(items["price"]) if not items.empty else 0.0)
+    freight_total_brl = round_brl(
+        sum_brl(items["freight_value"]) if not items.empty else 0.0
+    )
+    payment_total_brl = round_brl(
+        sum_brl(payments["payment_value"]) if not payments.empty else 0.0
+    )
+
+    # affected_entities.payment_ids format (README.md #6) is bare "<order_id>:<seq>",
+    # no "payment:" prefix — that prefix is only for evidence_ids, built later by
+    # the Coordinator via src/shared/evidence.py.
+    payment_ids = [
+        f"{order_id}:{payment_sequential}"
+        for payment_sequential in payments["payment_sequential"]
+    ]
+    payment_row_count = len(payments)
+
+    return PaymentResult(
+        payment_ids=payment_ids,
+        payment_row_count=payment_row_count,
+        item_total_brl=item_total_brl,
+        freight_total_brl=freight_total_brl,
+        payment_total_brl=payment_total_brl,
+        is_split_payment=payment_row_count >= 2,
+        reconciled=within_tolerance(
+            payment_total_brl,
+            item_total_brl + freight_total_brl,
+            MONEY_RECONCILIATION_TOLERANCE_BRL,
+        ),
+    )
