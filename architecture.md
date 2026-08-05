@@ -52,14 +52,16 @@ allowed to block a case from being written.
 | Verifier | `src/agents/verifier.py` | `CaseOutput` + `DataStore` (to confirm evidence IDs are real) | pass/fail list of problems → `main.py` |
 | I/O harness | `main.py` | `input/EC_*.json` | `output/EC_*.json`, `logging/trace.jsonl` |
 
-No agent calls an LLM in the current implementation — every field in
-`CaseOutput` is derived deterministically from `EC_POLICY_V1`'s fixed rule
-table (README §4), which requires exact reproducibility across 50 graded
-cases rather than generative judgment. `gpt-4o-mini` is declared in
-`src/shared/config.py`/`logging/metadata.json` per the assignment's model
-requirement and is available via `src/shared/llm_client.py` for any agent
-that later needs free-text reasoning (e.g. a confidence explanation), but no
-agent currently invokes it.
+Every field except `confidence` is derived deterministically from
+`EC_POLICY_V1`'s fixed rule table (README §4), which requires exact
+reproducibility across 50 graded cases rather than generative judgment. The
+Coordinator makes the one LLM call in the pipeline: `gpt-4o-mini`
+(`src/shared/llm_client.py`) scores `confidence` in `[0, 1]` given the facts
+that already determined `primary_issue` — it never influences
+`primary_issue` itself, only how strongly the supporting facts are judged to
+back it. If the API call fails or returns something unparseable/out of
+range, the Coordinator falls back to a fixed default (0.95 if a refund is
+recommended, 0.9 otherwise) so a flaky call can't break a graded run.
 
 ## Order & Seller Agent + Delivery Agent
 
