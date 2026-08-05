@@ -1,7 +1,8 @@
 """Person C — Coordinator + Policy Agent.
 
-resolve_case() takes one input case dict (already parsed from input/EC_*.json)
-and the two upstream results, and returns a CaseOutput per README.md #6.
+coordinate_case() receives one parsed input case, delegates domain analysis to
+the Fulfillment and Payment agents, then hands both results to resolve_case().
+resolve_case() applies EC_POLICY_V1 and returns a CaseOutput per README.md #6.
 
 Apply the priority table top-to-bottom, EXACTLY in this order — do not
 reorder or short-circuit differently (README.md #4):
@@ -15,6 +16,8 @@ reorder or short-circuit differently (README.md #4):
 
 from __future__ import annotations
 
+from src.agents.fulfillment_agent import analyze_fulfillment
+from src.agents.payment_agent import analyze_payment
 from src.shared.config import (
     LOGISTICS_PARTY_ID,
     MAX_ACTIONS,
@@ -221,3 +224,14 @@ def resolve_case(
     order_id = case["customer_request"]["claimed_order_id"]
 
     return _build_case_output(case, fulfillment, payment, order_id)
+
+
+def coordinate_case(
+    case: dict,
+) -> tuple[CaseOutput, FulfillmentResult, PaymentResult]:
+    """Delegate a case to domain agents and return every handoff for tracing."""
+    order_id = case["customer_request"]["claimed_order_id"]
+    fulfillment = analyze_fulfillment(order_id)
+    payment = analyze_payment(order_id)
+    output = resolve_case(case, fulfillment, payment)
+    return output, fulfillment, payment
