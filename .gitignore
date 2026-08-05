@@ -6,3 +6,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# submission artifact - regenerate fresh from output/ right before submitting,
+# don't version-control it (goes stale the moment output/*.json changes)
+output/*.zip
