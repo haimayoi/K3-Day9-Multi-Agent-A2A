@@ -1,3 +1,66 @@
+# Multi-Agent Architecture — E-commerce Dispute Resolution
+
+## Overview
+
+Each case flows through `main.py` → `coordinate_case()` in one direction, with
+each agent handing off a structured result to the next — no agent re-reads
+another agent's raw CSV rows, only its typed result object.
+
+```text
+input/EC_*.json
+      |
+      v
++-----------------------+     +----------------------+
+| Fulfillment Agent     |     | Payment Agent        |
+| (Order & Seller +     |     | (payment_agent.py)   |
+|  Delivery)            |     |                      |
+| analyze_fulfillment() |     | analyze_payment()    |
++-----------+-----------+     +----------+-----------+
+            |  FulfillmentResult          |  PaymentResult
+            v                             v
+        +-------------------------------------+
+        |     Coordinator / Policy Agent       |
+        |     (coordinator.py)                 |
+        |     resolve_case() applies           |
+        |     EC_POLICY_V1 priority table      |
+        +-------------------+-------------------+
+                            |  CaseOutput
+                            v
+                  +--------------------+
+                  |  Verifier Agent    |
+                  |  (verifier.py)     |
+                  |  verify_case()     |
+                  +---------+----------+
+                            |  pass -> write file / fail -> reject case
+                            v
+                     output/EC_*.json
+```
+
+Both domain agents (Fulfillment, Payment) run independently against the same
+`order_id` and never call each other — they only read from the shared,
+cached `DataStore` (`src/shared/data_loader.py`). The Coordinator is the only
+agent that combines their outputs, and the Verifier is the only agent
+allowed to block a case from being written.
+
+## Agent roles & data access
+
+| Agent | File | Reads | Writes / hands off |
+| --- | --- | --- | --- |
+| Fulfillment (Order & Seller + Delivery) | `src/agents/fulfillment_agent.py` | `orders.csv`, `order_items.csv` (via `DataStore`) | `FulfillmentResult` → Coordinator |
+| Payment | `src/agents/payment_agent.py` | `order_payments.csv`, `order_items.csv` (via `DataStore`) | `PaymentResult` → Coordinator |
+| Coordinator / Policy | `src/agents/coordinator.py` | `FulfillmentResult` + `PaymentResult` only (no direct CSV access) | `CaseOutput` → Verifier |
+| Verifier | `src/agents/verifier.py` | `CaseOutput` + `DataStore` (to confirm evidence IDs are real) | pass/fail list of problems → `main.py` |
+| I/O harness | `main.py` | `input/EC_*.json` | `output/EC_*.json`, `logging/trace.jsonl` |
+
+No agent calls an LLM in the current implementation — every field in
+`CaseOutput` is derived deterministically from `EC_POLICY_V1`'s fixed rule
+table (README §4), which requires exact reproducibility across 50 graded
+cases rather than generative judgment. `gpt-4o-mini` is declared in
+`src/shared/config.py`/`logging/metadata.json` per the assignment's model
+requirement and is available via `src/shared/llm_client.py` for any agent
+that later needs free-text reasoning (e.g. a confidence explanation), but no
+agent currently invokes it.
+
 ## Order & Seller Agent + Delivery Agent
 
 Implemented as a single function, `analyze_fulfillment()`, rather than two
@@ -42,3 +105,52 @@ The Payment Agent is deterministic and does not call an LLM.
 - **Outputs (`PaymentResult`):** `payment_ids`, `payment_row_count`, `item_total_brl`, `freight_total_brl`, `payment_total_brl`, `is_split_payment`, and `reconciled`.
 - **Data access:** read-only access to `data/olist_order_payments_dataset.csv` and `data/olist_order_items_dataset.csv` through the shared loader; it never reads CSV files directly.
 - **Handoff:** returns `PaymentResult` to the Coordinator/Policy Agent. A valid split payment has at least two payment rows and reconciles payment total against item price plus freight within `0.10 BRL`.
+
+## Coordinator / Policy Agent
+
+Deterministic — does not call an LLM. Owns `EC_POLICY_V1`: the only agent
+that decides `primary_issue` and builds the final `CaseOutput`.
+
+- **Role:** `coordinate_case()` calls Fulfillment then Payment for a given
+  case, then `resolve_case()` walks the priority table top-to-bottom
+  (canceled/unavailable-with-payment → seller-late → logistics-late →
+  valid split payment → unsupported late claim) to pick exactly one
+  `primary_issue`, in the order fixed by README §4.
+- **Inputs:** `FulfillmentResult`, `PaymentResult` — never touches a CSV
+  directly, only the two upstream agents' typed results.
+- **Outputs (`CaseOutput`):** `assessment` (primary_issue/case_status/
+  confidence), `affected_entities` (order/item/seller/payment IDs, each
+  capped at 5), `root_cause_analysis` (ranked causes capped at 3,
+  responsible parties capped at 3), `evidence_ids` (built via
+  `src/shared/evidence.py` helpers, capped at 10), `financial_resolution`
+  (item/freight/payment totals plus `recommended_refund_brl`), and
+  `resolution_actions` (mapped 1-1 from `primary_issue`).
+- **Handoff:** returns `CaseOutput` to the Verifier Agent before anything is
+  written to `output/`.
+- **Known gap:** the `unsupported_late_claim` fallback branch does not
+  explicitly re-check `PaymentResult.reconciled` before returning that
+  issue — README §4 requires "payment khớp" for this outcome. Verified this
+  doesn't affect any of the 50 real cases (every case that falls through to
+  `unsupported_late_claim` already has `reconciled = True`), but a case with
+  an unreconciled payment and on-time delivery would be misclassified. Left
+  as-is given the official 50 cases don't contain that combination
+  (README §4: "Bộ 50 case chính thức không chứa tình huống mơ hồ").
+
+## Verifier Agent
+
+Deterministic — does not call an LLM. Last checkpoint before a case is
+written to disk; a case that fails here is rejected rather than written
+with bad data.
+
+- **Role:** `verify_case()` checks `CaseOutput` against every hard-gate
+  condition in README §6/§8: valid `primary_issue`/`case_status` enum
+  values, `confidence` in `[0, 1]`, every entity/evidence/cause/action list
+  within its cap, every `resolution_action` in the known set, and — via
+  `validate_evidence_ids()` — that every evidence ID actually resolves
+  against the CSV data (catches false positives).
+- **Inputs:** one `CaseOutput` plus the shared `DataStore` (read-only, to
+  confirm evidence IDs).
+- **Outputs:** a list of problem strings; empty means the case passes.
+  `main.py` skips writing `output/EC_*.json` for any case with a non-empty
+  list and logs it to `logging/trace.jsonl` instead.
+- **Result:** all 50 real cases pass with zero problems.

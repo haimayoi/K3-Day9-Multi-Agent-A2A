@@ -2,6 +2,6 @@
   "model": "gpt-4o-mini",
   "provider": "openai",
   "parameter_size": "~8B (unofficial estimate; OpenAI has not published the exact parameter count for gpt-4o-mini)",
-  "framework": "TODO_FRAMEWORK",
+  "framework": "custom-python",
   "runtime": "python 3.11"
 }
