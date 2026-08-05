@@ -24,7 +24,6 @@ from src.shared.config import (
     MAX_EVIDENCE_IDS,
     MAX_IDS_PER_ENTITY_SET,
     MAX_RESPONSIBLE_PARTIES,
-    MAX_ROOT_CAUSES,
     PLATFORM_PARTY_ID,
 )
 from src.shared.evidence import item_evidence, order_evidence, payment_evidence, policy_evidence, seller_evidence
@@ -147,14 +146,15 @@ def _responsible_parties(primary_issue: str, fulfillment: FulfillmentResult) -> 
 
 
 def _ranked_causes(primary_issue: str, fulfillment: FulfillmentResult, payment: PaymentResult):
-    cause_codes = [_ISSUE_TO_CAUSE[primary_issue]]
-    cause_codes.extend(fulfillment['candidate_root_causes'])
-    if payment['is_split_payment'] and payment['reconciled']:
-        cause_codes.append('MULTIPLE_PAYMENTS_RECONCILED')
-    return [
-        {'cause_code': cause_code, 'rank': rank}
-        for rank, cause_code in enumerate(_cap(_unique(cause_codes), MAX_ROOT_CAUSES), start=1)
-    ]
+    # Each primary_issue maps to exactly one decisive cause_code (README.md #4
+    # table is a strict 1:1 mapping, and the official 50 cases contain no
+    # genuine multi-cause ambiguity per README.md #4: "Bộ 50 case chính thức
+    # không chứa tình huống mơ hồ"). Previously this also tacked on
+    # fulfillment's independently-computed candidate and a split-payment flag
+    # whenever they were incidentally true - e.g. every valid_split_payment
+    # case got a spurious second cause "DELIVERY_WITHIN_ESTIMATE", which is a
+    # true fact about the order but not why it's a valid split payment.
+    return [{'cause_code': _ISSUE_TO_CAUSE[primary_issue], 'rank': 1}]
 
 
 def _build_evidence_ids(
@@ -177,11 +177,14 @@ def _build_evidence_ids(
         if evidence_id is not None:
             evidence_ids.append(evidence_id)
 
-    evidence_seller_ids = seller_ids
+    # Seller evidence only when the seller is actually the responsible party
+    # (README.md #4: every other primary_issue's responsible party is
+    # platform/logistics_provider/none - none of them are seller-specific,
+    # so citing a seller ID there doesn't support the determination).
     if primary_issue == 'late_delivery_seller':
         evidence_seller_ids = _unique(fulfillment['late_seller_ids'] or seller_ids)
-    for seller_id in _cap(evidence_seller_ids, MAX_IDS_PER_ENTITY_SET):
-        evidence_ids.append(seller_evidence(seller_id))
+        for seller_id in _cap(evidence_seller_ids, MAX_IDS_PER_ENTITY_SET):
+            evidence_ids.append(seller_evidence(seller_id))
 
     for item_id in item_ids:
         evidence_id = _item_evidence_from_entity(item_id)
