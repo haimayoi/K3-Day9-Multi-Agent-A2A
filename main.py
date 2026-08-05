@@ -1,7 +1,7 @@
 """Person C — I/O harness. Run with: python main.py
 
 Reads input/EC_*.json, calls the three agents in order, verifies, writes
-output/EC_*.json, and appends one line per case to logging/trace.jsonl.
+output/output/EC_*.json, and appends one line per case to logging/trace.jsonl.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from src.shared.data_loader import get_data_store
 
 ROOT = Path(__file__).resolve().parent
 INPUT_DIR = ROOT / "input"
-OUTPUT_DIR = ROOT / "output"
+OUTPUT_DIR = ROOT / "output" / "output"
 TRACE_PATH = ROOT / "logging" / "trace.jsonl"
 
 
@@ -51,6 +51,7 @@ def run_case(case_path: Path, store, trace_lines: list[str]) -> dict | None:
 def main() -> None:
     store = get_data_store()
     trace_lines: list[str] = []
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     case_paths = sorted(INPUT_DIR.glob("EC_*.json"))
     print(f"Found {len(case_paths)} input cases")
