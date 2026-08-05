@@ -18,7 +18,7 @@ MODEL_PARAM_SIZE = "~8B (unofficial estimate — OpenAI has not published the ex
 
 # --- Framework -------------------------------------------------------------
 # TODO(team): fill in once picked at kickoff (e.g. "custom-python", "langgraph", "crewai").
-FRAMEWORK = "TODO_FRAMEWORK"
+FRAMEWORK = "custom-python"
 RUNTIME = "python 3.11"
 
 # --- Business constants (README.md #4-#6) ----------------------------------
