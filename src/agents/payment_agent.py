@@ -18,7 +18,6 @@ that's the Coordinator/Verifier's job, this agent reports everything it found.
 from __future__ import annotations
 
 from src.shared.data_loader import get_data_store
-from src.shared.evidence import payment_evidence
 from src.shared.interfaces import PaymentResult
 from src.shared.money import round_brl, sum_brl, within_tolerance
 from src.shared.config import MONEY_RECONCILIATION_TOLERANCE_BRL
@@ -48,8 +47,11 @@ def analyze_payment(order_id: str) -> PaymentResult:
         sum_brl(payments["payment_value"]) if not payments.empty else 0.0
     )
 
+    # affected_entities.payment_ids format (README.md #6) is bare "<order_id>:<seq>",
+    # no "payment:" prefix — that prefix is only for evidence_ids, built later by
+    # the Coordinator via src/shared/evidence.py.
     payment_ids = [
-        payment_evidence(order_id, payment_sequential)
+        f"{order_id}:{payment_sequential}"
         for payment_sequential in payments["payment_sequential"]
     ]
     payment_row_count = len(payments)
